@@ -935,6 +935,12 @@ async def chat_completions(request: Request):
                                             # 构造新的 delta 格式的 chunk
                                             content = ""
 
+                                            if "p" in chunk and chunk.get("p") == "response/status":
+                                                if v_value=='FINISHED':
+                                                    result_queue.put(None)  # 结束信号
+                                                    break
+                                                continue
+                                            
                                             if "p" in chunk and chunk.get("p") == "response/search_status":
                                                 continue
                                                 
@@ -1145,6 +1151,12 @@ async def chat_completions(request: Request):
                                 if "v" in chunk:
                                     v_value = chunk["v"]
                                     
+                                    if "p" in chunk and chunk.get("p") == "response/status":
+                                        if v_value=='FINISHED':
+                                            data_queue.put(None)  # 结束信号
+                                            break
+                                        continue
+
                                     if "p" in chunk and chunk.get("p") == "response/search_status":
                                         continue
                                                 
