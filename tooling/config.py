@@ -15,6 +15,9 @@ def get_tool_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         "fewshot": bool(config.get("tool_call_fewshot", True)),
         "retry_on_empty": bool(config.get("tool_call_retry_on_empty", True)),
         "retry_on_refusal": bool(config.get("tool_call_retry_on_refusal", True)),
+        "retry_on_command_text": bool(
+            config.get("tool_call_retry_on_command_text", True)
+        ),
         "auto_continue": bool(config.get("tool_call_auto_continue", True)),
         "retry_max_attempts": max(0, int(config.get("tool_call_retry_max_attempts", 1))),
         "fix_arguments": bool(parser_config.get("fix_arguments", True)),

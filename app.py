@@ -25,6 +25,7 @@ from tooling.config import get_tool_settings
 from tooling.guard import (
     build_tool_retry_instruction,
     should_auto_continue_tool_response,
+    should_retry_command_text,
     should_retry_empty_tool_call,
     should_retry_tool_refusal,
 )
@@ -162,6 +163,10 @@ def stabilize_tool_response(
             merge_mode = "append"
         elif should_retry_tool_refusal(response_text, internal_calls, tool_settings):
             retry_reason = "refusal"
+        elif should_retry_command_text(
+            response_text, tool_specs, internal_calls, tool_settings
+        ):
+            retry_reason = "command_text"
         elif should_retry_empty_tool_call(tool_choice, internal_calls, tool_settings):
             retry_reason = "empty"
 
@@ -171,7 +176,7 @@ def stabilize_tool_response(
         followup_messages = build_tool_followup_messages(
             messages,
             response_text,
-            build_tool_retry_instruction(retry_reason, tool_choice),
+            build_tool_retry_instruction(retry_reason, tool_choice, tool_specs),
         )
         retry_text, retry_reasoning = retry_runner(followup_messages)
         attempts += 1
