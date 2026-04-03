@@ -24,5 +24,14 @@
       "password": "password4",
       "token": ""
     }
-  ]
+  ],
+  "tool_call_strategy": "json_action",
+  "tool_call_fewshot": true,
+  "tool_call_retry_on_empty": true,
+  "tool_call_retry_on_refusal": true,
+  "tool_call_auto_continue": true,
+  "tool_call_retry_max_attempts": 1,
+  "tool_call_parser": {
+    "fix_arguments": true
+  }
 }

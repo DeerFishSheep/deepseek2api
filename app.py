@@ -1,4 +1,5 @@
 import base64
+import copy
 import ctypes
 import json
 import logging
@@ -14,6 +15,25 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from tooling.adapter import (
+    extract_anthropic_tools,
+    extract_openai_tools,
+    to_anthropic_tool_use_blocks,
+    to_openai_tool_calls,
+)
+from tooling.config import get_tool_settings
+from tooling.guard import (
+    build_tool_retry_instruction,
+    should_auto_continue_tool_response,
+    should_retry_empty_tool_call,
+    should_retry_tool_refusal,
+)
+from tooling.parser import parse_tool_response
+from tooling.prompt import (
+    build_tool_prompt,
+    normalize_anthropic_tool_choice,
+    normalize_openai_tool_choice,
+)
 from wasmtime import Linker, Module, Store
 
 # -------------------------- 初始化 tokenizer --------------------------
@@ -41,6 +61,145 @@ app.add_middleware(
 
 # 模板目录
 templates = Jinja2Templates(directory="templates")
+
+def collect_deepseek_response_text(deepseek_resp, *, search_enabled: bool = False):
+    final_text = []
+    final_reasoning = []
+    ptype = "text"
+
+    try:
+        for raw_line in deepseek_resp.iter_lines():
+            if not raw_line:
+                continue
+
+            try:
+                line = raw_line.decode("utf-8")
+            except Exception:
+                continue
+
+            if not line.startswith("data:"):
+                continue
+
+            data_str = line[5:].strip()
+            if data_str == "[DONE]":
+                break
+
+            try:
+                chunk = json.loads(data_str)
+            except Exception:
+                continue
+
+            if "p" in chunk and chunk.get("p") == "response/search_status":
+                continue
+
+            if "p" in chunk and chunk.get("p") == "response/thinking_content":
+                ptype = "thinking"
+            elif "p" in chunk and chunk.get("p") == "response/content":
+                ptype = "text"
+
+            if "v" not in chunk:
+                continue
+
+            v_value = chunk["v"]
+            if isinstance(v_value, str):
+                if search_enabled and v_value.startswith("[citation:"):
+                    continue
+                if ptype == "thinking":
+                    final_reasoning.append(v_value)
+                else:
+                    final_text.append(v_value)
+    finally:
+        try:
+            deepseek_resp.close()
+        except Exception:
+            pass
+
+    return "".join(final_text), "".join(final_reasoning)
+
+
+def build_tool_followup_messages(messages, assistant_text: str, instruction: str):
+    followup_messages = copy.deepcopy(messages)
+    assistant_text = str(assistant_text or "").strip()
+    if assistant_text:
+        followup_messages.append({"role": "assistant", "content": assistant_text})
+    followup_messages.append({"role": "user", "content": instruction})
+    return followup_messages
+
+
+def stabilize_tool_response(
+    messages,
+    response_text,
+    reasoning_text,
+    tool_specs,
+    tool_settings,
+    tool_choice,
+    retry_runner,
+):
+    response_text = str(response_text or "")
+    reasoning_text = str(reasoning_text or "")
+    retry_budget = int(tool_settings.get("retry_max_attempts", 1))
+
+    internal_calls, clean_text = parse_tool_response(
+        response_text,
+        tool_settings.get("strategy", "legacy"),
+        tool_specs,
+        fix_arguments=tool_settings.get("fix_arguments", True),
+        allow_fallback=True,
+    )
+
+    attempts = 0
+    while attempts < retry_budget:
+        retry_reason = None
+        merge_mode = "replace"
+
+        if should_auto_continue_tool_response(
+            response_text,
+            tool_settings.get("strategy", "legacy"),
+            internal_calls,
+            tool_settings,
+        ):
+            retry_reason = "continue"
+            merge_mode = "append"
+        elif should_retry_tool_refusal(response_text, internal_calls, tool_settings):
+            retry_reason = "refusal"
+        elif should_retry_empty_tool_call(tool_choice, internal_calls, tool_settings):
+            retry_reason = "empty"
+
+        if not retry_reason:
+            break
+
+        followup_messages = build_tool_followup_messages(
+            messages,
+            response_text,
+            build_tool_retry_instruction(retry_reason, tool_choice),
+        )
+        retry_text, retry_reasoning = retry_runner(followup_messages)
+        attempts += 1
+
+        if not retry_text and not retry_reasoning:
+            break
+
+        if merge_mode == "append":
+            response_text += retry_text or ""
+            reasoning_text += retry_reasoning or ""
+        else:
+            response_text = retry_text or response_text
+            reasoning_text = retry_reasoning or reasoning_text
+
+        internal_calls, clean_text = parse_tool_response(
+            response_text,
+            tool_settings.get("strategy", "legacy"),
+            tool_specs,
+            fix_arguments=tool_settings.get("fix_arguments", True),
+            allow_fallback=True,
+        )
+
+    return response_text, reasoning_text, internal_calls, clean_text
+
+
+async def call_claude_via_openai(request: Request, claude_payload):
+    return call_claude_via_openai_sync(request, claude_payload)
+
 
 # ----------------------------------------------------------------------
 # (1) 配置文件的读写函数
@@ -285,6 +444,58 @@ def get_auth_headers(request: Request):
     return {**BASE_HEADERS, "authorization": f"Bearer {request.state.deepseek_token}"}
 
 
+def append_tool_prompt(messages, tool_prompt: str):
+    if not tool_prompt:
+        return
+
+    for msg in messages:
+        if msg.get("role") != "system":
+            continue
+
+        existing_content = msg.get("content", "")
+        if isinstance(existing_content, list):
+            text_parts = []
+            for item in existing_content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(str(item.get("text", "")))
+            existing_content = "\n".join(text_parts)
+        else:
+            existing_content = str(existing_content or "")
+
+        msg["content"] = (
+            existing_content + "\n\n" + tool_prompt if existing_content else tool_prompt
+        )
+        return
+
+    messages.insert(0, {"role": "system", "content": tool_prompt})
+
+
+def parse_openai_tool_payload(response_text, tool_specs, tool_settings):
+    internal_calls, clean_text = parse_tool_response(
+        response_text,
+        tool_settings.get("strategy", "legacy"),
+        tool_specs,
+        fix_arguments=tool_settings.get("fix_arguments", True),
+        allow_fallback=True,
+    )
+    if not internal_calls:
+        return None, clean_text
+    return to_openai_tool_calls(internal_calls), clean_text
+
+
+def parse_anthropic_tool_payload(response_text, tool_specs, tool_settings):
+    internal_calls, clean_text = parse_tool_response(
+        response_text,
+        tool_settings.get("strategy", "legacy"),
+        tool_specs,
+        fix_arguments=tool_settings.get("fix_arguments", True),
+        allow_fallback=True,
+    )
+    if not internal_calls:
+        return [], clean_text
+    return to_anthropic_tool_use_blocks(internal_calls), clean_text
+
+
 # ----------------------------------------------------------------------
 # Claude 认证相关函数
 # ----------------------------------------------------------------------
@@ -359,7 +570,7 @@ def convert_deepseek_to_claude_format(deepseek_response, original_claude_model=C
 # ----------------------------------------------------------------------
 # Claude API 调用函数
 # ----------------------------------------------------------------------
-async def call_claude_via_openai(request: Request, claude_payload):
+def call_claude_via_openai_sync(request: Request, claude_payload):
     """通过现有OpenAI接口调用Claude（实际调用DeepSeek）"""
     # 将Claude请求转换为DeepSeek请求
     deepseek_payload = convert_claude_to_deepseek(claude_payload)
@@ -923,55 +1134,21 @@ async def chat_completions(request: Request):
         
         # 处理 tools 参数（OpenAI 格式）
         tools_requested = req_data.get("tools") or []
-        has_tools = len(tools_requested) > 0
+        tool_specs = extract_openai_tools(tools_requested)
+        tool_settings = get_tool_settings(CONFIG)
+        tool_choice = normalize_openai_tool_choice(req_data.get("tool_choice"))
+        has_tools = len(tool_specs) > 0
         
         # 如果有工具定义，在 messages 前添加工具使用指导的系统消息
         if has_tools:
-            tool_schemas = []
-            for tool in tools_requested:
-                func = tool.get('function', {})
-                tool_name = func.get('name', 'unknown')
-                tool_desc = func.get('description', 'No description available')
-                params = func.get('parameters', {})
-                
-                tool_info = f"Tool: {tool_name}\nDescription: {tool_desc}"
-                if 'properties' in params:
-                    props = []
-                    required = params.get('required', [])
-                    for prop_name, prop_info in params['properties'].items():
-                        prop_type = prop_info.get('type', 'string')
-                        prop_desc = prop_info.get('description', '')
-                        is_req = ' (required)' if prop_name in required else ''
-                        props.append(f"  - {prop_name}: {prop_type}{is_req} - {prop_desc}")
-                    if props:
-                        tool_info += f"\nParameters:\n{chr(10).join(props)}"
-                tool_schemas.append(tool_info)
-            
-            tool_system_prompt = f"""You have access to the following tools:
-
-{chr(10).join(tool_schemas)}
-
-When you need to use a tool, respond with a JSON object in this exact format:
-{{"tool_calls": [{{"id": "call_xxx", "type": "function", "function": {{"name": "tool_name", "arguments": "{{\\"param\\": \\"value\\"}}"}}}}]}}
-
-You can call multiple tools in one response by adding more objects to the tool_calls array.
-IMPORTANT: The "arguments" field must be a JSON string, not a JSON object.
-
-Example:
-{{"tool_calls": [{{"id": "call_001", "type": "function", "function": {{"name": "get_weather", "arguments": "{{\\"location\\": \\"Beijing\\"}}"}}}}]}}
-
-After calling tools, you will receive the results and can continue the conversation."""
-            
+            tool_system_prompt = build_tool_prompt(
+                tool_specs,
+                tool_settings,
+                protocol="openai",
+                tool_choice=tool_choice,
+            )
+            append_tool_prompt(messages, tool_system_prompt)
             # 将工具说明添加到第一个 system 消息，或创建新的 system 消息
-            system_found = False
-            for msg in messages:
-                if msg.get("role") == "system":
-                    msg["content"] = msg["content"] + "\n\n" + tool_system_prompt
-                    system_found = True
-                    break
-            
-            if not system_found:
-                messages.insert(0, {"role": "system", "content": tool_system_prompt})
         
         # 使用 messages_prepare 函数构造最终 prompt
         final_prompt = messages_prepare(messages)
@@ -999,6 +1176,24 @@ After calling tools, you will receive the results and can continue the conversat
             raise HTTPException(status_code=500, detail="Failed to get completion.")
         created_time = int(time.time())
         completion_id = f"{session_id}"
+
+        def run_openai_tool_retry(followup_messages):
+            retry_prompt = messages_prepare(followup_messages)
+            retry_payload = {
+                "chat_session_id": session_id,
+                "parent_message_id": None,
+                "prompt": retry_prompt,
+                "ref_file_ids": [],
+                "thinking_enabled": thinking_enabled,
+                "search_enabled": search_enabled,
+            }
+            retry_resp = call_completion_endpoint(retry_payload, headers, max_attempts=3)
+            if not retry_resp:
+                return "", ""
+            return collect_deepseek_response_text(
+                retry_resp,
+                search_enabled=search_enabled,
+            )
 
         # 流式响应（SSE）或普通响应
         if bool(req_data.get("stream", False)):
@@ -1174,11 +1369,33 @@ After calling tools, you will receive the results and can continue the conversat
                                 tool_calls_detected = None
                                 final_text_content = final_text
                                 if has_tools:
-                                    tool_calls_detected, final_text_content = detect_and_parse_tool_calls(final_text)
+                                    (
+                                        final_text,
+                                        final_thinking,
+                                        internal_tool_calls,
+                                        final_text_content,
+                                    ) = stabilize_tool_response(
+                                        messages,
+                                        final_text,
+                                        final_thinking,
+                                        tool_specs,
+                                        tool_settings,
+                                        tool_choice,
+                                        run_openai_tool_retry,
+                                    )
+                                    if internal_tool_calls:
+                                        tool_calls_detected = to_openai_tool_calls(internal_tool_calls)
+                                    final_text = final_text_content
                                 
                                 # 如果检测到 tool_calls，先发送 tool_calls chunk
                                 if tool_calls_detected:
                                     for tool_call in tool_calls_detected:
+                                        tool_delta = {
+                                            "tool_calls": [tool_call]
+                                        }
+                                        if not first_chunk_sent:
+                                            tool_delta["role"] = "assistant"
+                                            first_chunk_sent = True
                                         tool_call_chunk = {
                                             "id": completion_id,
                                             "object": "chat.completion.chunk",
@@ -1187,20 +1404,40 @@ After calling tools, you will receive the results and can continue the conversat
                                             "choices": [
                                                 {
                                                     "index": 0,
-                                                    "delta": {
-                                                        "tool_calls": [tool_call]
-                                                    },
+                                                    "delta": tool_delta,
                                                     "finish_reason": None,
                                                 }
                                             ],
                                         }
                                         yield f"data: {json.dumps(tool_call_chunk, ensure_ascii=False)}\n\n"
                                         last_send_time = current_time
-                                
+
+                                if has_tools and not tool_calls_detected and final_text_content:
+                                    final_delta = {"content": final_text_content}
+                                    if not first_chunk_sent:
+                                        final_delta["role"] = "assistant"
+                                        first_chunk_sent = True
+                                    content_chunk = {
+                                        "id": completion_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": created_time,
+                                        "model": model,
+                                        "choices": [
+                                            {
+                                                "index": 0,
+                                                "delta": final_delta,
+                                                "finish_reason": None,
+                                            }
+                                        ],
+                                    }
+                                    yield f"data: {json.dumps(content_chunk, ensure_ascii=False)}\n\n"
+                                    last_send_time = current_time
+
                                 # 发送最终统计信息
                                 prompt_tokens = len(final_prompt) // 4  # 简单估算token数
                                 thinking_tokens = len(final_thinking) // 4  # 简单估算token数
                                 completion_tokens = len(final_text) // 4  # 简单估算token数
+                                completion_tokens = len(final_text_content) // 4
                                 usage = {
                                     "prompt_tokens": prompt_tokens,
                                     "completion_tokens": thinking_tokens + completion_tokens,
@@ -1257,7 +1494,7 @@ After calling tools, you will receive the results and can continue the conversat
                                 if ctype == "thinking":
                                     if thinking_enabled:
                                         delta_obj["reasoning_content"] = ctext
-                                elif ctype == "text":
+                                elif ctype == "text" and not has_tools:
                                     delta_obj["content"] = ctext
                                 if delta_obj:
                                     new_choices.append(
@@ -1392,7 +1629,22 @@ After calling tools, you will receive the results and can continue the conversat
                                                 # 检测 tool_calls
                                                 tool_calls_detected = None
                                                 if has_tools:
-                                                    tool_calls_detected, final_content = detect_and_parse_tool_calls(final_content)
+                                                    (
+                                                        final_content,
+                                                        final_reasoning,
+                                                        internal_tool_calls,
+                                                        final_content,
+                                                    ) = stabilize_tool_response(
+                                                        messages,
+                                                        final_content,
+                                                        final_reasoning,
+                                                        tool_specs,
+                                                        tool_settings,
+                                                        tool_choice,
+                                                        run_openai_tool_retry,
+                                                    )
+                                                    if internal_tool_calls:
+                                                        tool_calls_detected = to_openai_tool_calls(internal_tool_calls)
                                                 
                                                 prompt_tokens = len(final_prompt) // 4  # 简单估算token数
                                                 reasoning_tokens = len(final_reasoning) // 4  # 简单估算token数
@@ -1462,7 +1714,22 @@ After calling tools, you will receive the results and can continue the conversat
                         # 检测 tool_calls
                         tool_calls_detected = None
                         if has_tools:
-                            tool_calls_detected, final_content = detect_and_parse_tool_calls(final_content)
+                            (
+                                final_content,
+                                final_reasoning,
+                                internal_tool_calls,
+                                final_content,
+                            ) = stabilize_tool_response(
+                                messages,
+                                final_content,
+                                final_reasoning,
+                                tool_specs,
+                                tool_settings,
+                                tool_choice,
+                                run_openai_tool_retry,
+                            )
+                            if internal_tool_calls:
+                                tool_calls_detected = to_openai_tool_calls(internal_tool_calls)
                         
                         prompt_tokens = len(final_prompt) // 4  # 简单估算token数
                         reasoning_tokens = len(final_reasoning) // 4  # 简单估算token数
@@ -1588,7 +1855,10 @@ async def claude_messages(request: Request):
         
         # 处理工具使用请求
         tools_requested = req_data.get("tools") or []
-        has_tools = len(tools_requested) > 0
+        tool_specs = extract_anthropic_tools(tools_requested)
+        tool_settings = get_tool_settings(CONFIG)
+        tool_choice = normalize_anthropic_tool_choice(req_data.get("tool_choice"))
+        has_tools = len(tool_specs) > 0
         
         # 检查是否包含工具结果（tool_result）
         has_tool_result = False
@@ -1604,57 +1874,22 @@ async def claude_messages(request: Request):
         payload["messages"] = normalized_messages.copy()
         
         # 如果有工具定义，添加工具使用指导的系统消息
-        if has_tools and not any(m.get("role") == "system" for m in payload["messages"]):
-            tool_schemas = []
-            for tool in tools_requested:
-                tool_name = tool.get('name', 'unknown')
-                tool_desc = tool.get('description', 'No description available')
-                schema = tool.get('input_schema', {})
-                
-                tool_info = f"Tool: {tool_name}\nDescription: {tool_desc}"
-                if 'properties' in schema:
-                    props = []
-                    required = schema.get('required', [])
-                    for prop_name, prop_info in schema['properties'].items():
-                        prop_type = prop_info.get('type', 'string')
-                        is_req = ' (required)' if prop_name in required else ''
-                        props.append(f"  - {prop_name}: {prop_type}{is_req}")
-                    if props:
-                        tool_info += f"\nParameters:\n{chr(10).join(props)}"
-                tool_schemas.append(tool_info)
-            
-            system_message = {
-                "role": "system",
-                "content": f"""You are Claude, a helpful AI assistant. You have access to these tools:
+        if has_tools:
+            tool_system_prompt = build_tool_prompt(
+                tool_specs,
+                tool_settings,
+                protocol="anthropic",
+                tool_choice=tool_choice,
+            )
+            append_tool_prompt(payload["messages"], tool_system_prompt)
 
-{chr(10).join(tool_schemas)}
-
-When you need to use tools, you can call multiple tools in a single response. Use this format:
-
-{{"tool_calls": [
-  {{"name": "tool1", "input": {{"param": "value"}}}},
-  {{"name": "tool2", "input": {{"param": "value"}}}}
-]}}
-
-IMPORTANT: You can call multiple tools in ONE response. If you need to:
-1. Create a directory - include that in tool_calls
-2. Write a file - include that in the SAME tool_calls array
-3. Run a command - include that in the SAME tool_calls array
-
-Example of multiple tool calls in one response:
-{{"tool_calls": [
-  {{"name": "str_replace_editor", "input": {{"command": "create", "path": "pp1/hello.py", "file_text": "print('Hello, World!')"}}}},
-  {{"name": "Bash", "input": {{"command": "python pp1/hello.py"}}}}
-]}}
-
-Examples:
-- For TodoWrite: {{"name": "TodoWrite", "input": {{"todos": [{{"content": "task", "status": "pending", "activeForm": "doing task"}}]}}}}
-- For str_replace_editor: {{"name": "str_replace_editor", "input": {{"command": "create", "path": "file.py", "file_text": "code"}}}}
-- For Bash: {{"name": "Bash", "input": {{"command": "cd /path && python file.py"}}}}
-
-Remember: Output ONLY the JSON, no other text. The response must start with {{ and end with ]}}"""
-            }
-            payload["messages"].insert(0, system_message)
+        def run_anthropic_tool_retry(followup_messages):
+            retry_payload = payload.copy()
+            retry_payload["messages"] = followup_messages
+            retry_resp = call_claude_via_openai_sync(request, retry_payload)
+            if not retry_resp:
+                return "", ""
+            return collect_deepseek_response_text(retry_resp)
 
         deepseek_resp = await call_claude_via_openai(request, payload)
         if not deepseek_resp:
@@ -1729,17 +1964,41 @@ Remember: Output ONLY the JSON, no other text. The response must start with {{ a
                     yield f"data: {json.dumps(message_start)}\n\n"
                     
                     # 2. 检查是否有工具调用 - 改进的检测逻辑
+                    tool_use_blocks = []
                     detected_tools = []
                     
                     # 清理响应文本
                     cleaned_response = full_response_text.strip()
+                    if has_tools:
+                        (
+                            full_response_text,
+                            _,
+                            internal_tool_calls,
+                            cleaned_response,
+                        ) = stabilize_tool_response(
+                            payload["messages"],
+                            full_response_text,
+                            "",
+                            tool_specs,
+                            tool_settings,
+                            tool_choice,
+                            run_anthropic_tool_retry,
+                        )
+                        if internal_tool_calls:
+                            tool_use_blocks = to_anthropic_tool_use_blocks(internal_tool_calls)
                     
                     # 记录原始响应用于调试
                     logger.debug(f"[Tool Detection] Raw response: {cleaned_response[:500] if cleaned_response else 'Empty'}")
                     
                     # 尝试多种工具调用检测方法
-                    detected_tools = []
-                    tool_detected = False
+                    detected_tools = [
+                        {
+                            "name": block.get("name"),
+                            "input": block.get("input", {}),
+                        }
+                        for block in tool_use_blocks
+                    ]
+                    tool_detected = bool(detected_tools)
                     
                     # 方法1: 检测完整的JSON格式
                     if cleaned_response.startswith('{"tool_calls":') and cleaned_response.endswith(']}'):
@@ -1806,6 +2065,12 @@ Remember: Output ONLY the JSON, no other text. The response must start with {{ a
                     '''
                     
                     content_index = 0
+                    if cleaned_response:
+                        yield f"data: {json.dumps({'type': 'content_block_start', 'index': content_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                        yield f"data: {json.dumps({'type': 'content_block_delta', 'index': content_index, 'delta': {'type': 'text_delta', 'text': cleaned_response}})}\n\n"
+                        yield f"data: {json.dumps({'type': 'content_block_stop', 'index': content_index})}\n\n"
+                        output_tokens += len(cleaned_response) // 4
+                        content_index += 1
                     if detected_tools:
                         # 有工具调用
                         stop_reason = "tool_use"
@@ -1825,11 +2090,6 @@ Remember: Output ONLY the JSON, no other text. The response must start with {{ a
                     else:
                         # 没有工具调用，普通文本响应
                         stop_reason = "end_turn"
-                        if full_response_text:
-                            yield f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                            yield f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': full_response_text}})}\n\n"
-                            yield f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
-                            output_tokens += len(full_response_text) // 4
 
                     # 3. message_delta 和 message_stop
                     yield f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': output_tokens}})}\n\n"
@@ -1924,13 +2184,38 @@ Remember: Output ONLY the JSON, no other text. The response must start with {{ a
                     logger.warning(f"[claude_messages] 关闭响应异常: {e}")
                 
                 # 检查是否包含工具调用 - 改进的检测逻辑
+                tool_use_blocks = []
                 detected_tools = []
                 
                 # 清理响应文本
                 cleaned_content = final_content.strip()
+                if has_tools:
+                    (
+                        final_content,
+                        final_reasoning,
+                        internal_tool_calls,
+                        cleaned_content,
+                    ) = stabilize_tool_response(
+                        payload["messages"],
+                        final_content,
+                        final_reasoning,
+                        tool_specs,
+                        tool_settings,
+                        tool_choice,
+                        run_anthropic_tool_retry,
+                    )
+                    if internal_tool_calls:
+                        tool_use_blocks = to_anthropic_tool_use_blocks(internal_tool_calls)
                 
                 # 尝试多种工具调用检测方法
-                tool_detected = False
+                detected_tools = [
+                    {
+                        "name": block.get("name"),
+                        "input": block.get("input", {}),
+                    }
+                    for block in tool_use_blocks
+                ]
+                tool_detected = bool(detected_tools)
                 
                 # 方法1: 检测完整的JSON格式
                 if cleaned_content.startswith('{"tool_calls":') and cleaned_content.endswith(']}'):
@@ -2006,7 +2291,7 @@ Remember: Output ONLY the JSON, no other text. The response must start with {{ a
                     "stop_sequence": None,
                     "usage": {
                         "input_tokens": len(str(normalized_messages)) // 4,
-                        "output_tokens": (len(final_content) + len(final_reasoning)) // 4
+                        "output_tokens": (len(cleaned_content) + len(final_reasoning)) // 4
                     }
                 }
                 
@@ -2015,6 +2300,12 @@ Remember: Output ONLY the JSON, no other text. The response must start with {{ a
                     claude_response["content"].append({
                         "type": "thinking",
                         "thinking": final_reasoning
+                    })
+
+                if cleaned_content:
+                    claude_response["content"].append({
+                        "type": "text",
+                        "text": cleaned_content
                     })
                 
                 # 处理工具调用
@@ -2032,7 +2323,7 @@ Remember: Output ONLY the JSON, no other text. The response must start with {{ a
                         })
                 else:
                     # 没有工具调用，添加普通文本内容
-                    if final_content or not final_reasoning:
+                    if (not cleaned_content) and (final_content or not final_reasoning):
                         claude_response["content"].append({
                             "type": "text",
                             "text": final_content or "抱歉，没有生成有效的响应内容。"
