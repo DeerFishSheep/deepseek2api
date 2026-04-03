@@ -49,11 +49,11 @@
 
 已确认当前增强版把工具链路拆成了独立模块：
 
-- [`tooling/prompt.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/prompt.py)
-- [`tooling/parser.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/parser.py)
-- [`tooling/adapter.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/adapter.py)
-- [`tooling/guard.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/guard.py)
-- [`tooling/fixer.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/fixer.py)
+- [`tooling/prompt.py`](../tooling/prompt.py)
+- [`tooling/parser.py`](../tooling/parser.py)
+- [`tooling/adapter.py`](../tooling/adapter.py)
+- [`tooling/guard.py`](../tooling/guard.py)
+- [`tooling/fixer.py`](../tooling/fixer.py)
 
 相比旧版方案，它多了几层稳定性处理：
 
@@ -66,7 +66,7 @@
 
 ## 配置项
 
-配置文件示例见 [`config.json`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/config.json)。
+配置文件示例见 [`config.json`](../config.json)。
 
 与 tools 相关的字段：
 
@@ -226,9 +226,9 @@ print(resp.json())
 
 ## 相关文件
 
-- [`app.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/app.py)
-- [`tooling/prompt.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/prompt.py)
-- [`tooling/parser.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/parser.py)
-- [`tooling/adapter.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/adapter.py)
-- [`tooling/guard.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/guard.py)
-- [`docs/CURSOR2API_MIGRATION_PLAN.md`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/docs/CURSOR2API_MIGRATION_PLAN.md)
+- [`app.py`](../app.py)
+- [`tooling/prompt.py`](../tooling/prompt.py)
+- [`tooling/parser.py`](../tooling/parser.py)
+- [`tooling/adapter.py`](../tooling/adapter.py)
+- [`tooling/guard.py`](../tooling/guard.py)
+- [`docs/CURSOR2API_MIGRATION_PLAN.md`](CURSOR2API_MIGRATION_PLAN.md)

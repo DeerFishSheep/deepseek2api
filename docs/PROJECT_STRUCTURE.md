@@ -22,24 +22,24 @@ deepseek2api/
 
 ### 根目录
 
-- [`app.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/app.py)：当前主入口，包含路由、DeepSeek 请求、会话逻辑、流式适配
-- [`config.json`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/config.json)：运行配置
-- [`Dockerfile`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/Dockerfile)：容器构建
-- [`docker-compose.yml`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/docker-compose.yml)：本地 compose 编排
+- [`app.py`](../app.py)：当前主入口，包含路由、DeepSeek 请求、会话逻辑、流式适配
+- [`config.json`](../config.json)：运行配置
+- [`Dockerfile`](../Dockerfile)：容器构建
+- [`docker-compose.yml`](../docker-compose.yml)：本地 compose 编排
 
 ### `tooling/`
 
-- [`tooling/adapter.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/adapter.py)：协议适配层，负责 OpenAI / Anthropic tools 转换
-- [`tooling/config.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/config.py)：工具相关配置读取
-- [`tooling/fixer.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/fixer.py)：参数与引号修复
-- [`tooling/guard.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/guard.py)：重试、拒答识别、自动续写判定
-- [`tooling/parser.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/parser.py)：`json action` / legacy 解析器
-- [`tooling/prompt.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling/prompt.py)：工具提示词和 `tool_choice` 标准化
+- [`tooling/adapter.py`](../tooling/adapter.py)：协议适配层，负责 OpenAI / Anthropic tools 转换
+- [`tooling/config.py`](../tooling/config.py)：工具相关配置读取
+- [`tooling/fixer.py`](../tooling/fixer.py)：参数与引号修复
+- [`tooling/guard.py`](../tooling/guard.py)：重试、拒答识别、自动续写判定
+- [`tooling/parser.py`](../tooling/parser.py)：`json action` / legacy 解析器
+- [`tooling/prompt.py`](../tooling/prompt.py)：工具提示词和 `tool_choice` 标准化
 
 ### `docs/`
 
-- [`docs/TOOLS_SUPPORT.md`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/docs/TOOLS_SUPPORT.md)：工具调用说明
-- [`docs/CURSOR2API_MIGRATION_PLAN.md`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/docs/CURSOR2API_MIGRATION_PLAN.md)：迁移方案与设计记录
+- [`docs/TOOLS_SUPPORT.md`](TOOLS_SUPPORT.md)：工具调用说明
+- [`docs/CURSOR2API_MIGRATION_PLAN.md`](CURSOR2API_MIGRATION_PLAN.md)：迁移方案与设计记录
 - 当前文档定位是“设计说明 + 使用说明”，不承载运行时代码逻辑
 
 ## 为什么先做这层整理

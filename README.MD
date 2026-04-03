@@ -104,7 +104,7 @@ docker run -d -p 5001:5001 -v "$(pwd)/config.json:/app/config.json" --name deeps
 
 ### Docker Compose
 
-当前仓库的 [`docker-compose.yml`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/docker-compose.yml) 已调整为构建本地增强版镜像：
+当前仓库的 [`docker-compose.yml`](docker-compose.yml) 已调整为构建本地增强版镜像：
 
 ```bash
 docker compose up --build -d
@@ -183,10 +183,10 @@ http://127.0.0.1:5001/anthropic/v1
 
 当前已经完成一轮轻量结构化整理：
 
-- [`app.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/app.py)：主入口与路由
-- [`tooling/`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling)：工具调用相关模块
-- [`templates/`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/templates)：页面模板
-- [`docs/`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/docs)：项目文档与迁移说明
+- [`app.py`](app.py)：主入口与路由
+- [`tooling/`](tooling)：工具调用相关模块
+- [`templates/`](templates)：页面模板
+- [`docs/`](docs)：项目文档与迁移说明
 
 如果你要继续清洗代码结构，建议下一步优先拆分：
 
