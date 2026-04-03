@@ -1,0 +1,11 @@
+version: "3"
+
+services:
+  deepseek2api:
+    container_name: deepseek2api
+    image: ${DEEPSEEK2API_IMAGE:-ghcr.io/deerfishsheep/deepseek2api:latest}
+    restart: unless-stopped
+    ports:
+      - "${DEEPSEEK2API_PORT:-5001}:5001"
+    volumes:
+      - "./config.json:/app/config.json"
