@@ -1,5 +1,7 @@
 # DeepSeek2API Tool Calling Migration Plan
 
+> 状态说明：这份文档保留了迁移设计过程。当前仓库的 Phase 1 / Phase 2 核心能力已经落地，实际文件名以 `tooling/` 目录下的实现为准，例如 `tooling/prompt.py`、`tooling/parser.py`、`tooling/guard.py`。
+
 ## 目标
 
 把 `cursor2api` 中更稳定的工具调用机制迁移到 `deepseek2api`，让 `deepseek2api` 在部署后：

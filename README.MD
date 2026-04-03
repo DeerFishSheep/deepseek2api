@@ -1,60 +1,53 @@
 # DeepSeek2API
 
-[![](https://img.shields.io/github/license/iidamie/deepseek2api.svg)](LICENSE)
-![](https://img.shields.io/github/stars/iidamie/deepseek2api.svg)
-![](https://img.shields.io/github/forks/iidamie/deepseek2api.svg)
+[![](https://img.shields.io/github/license/DeerFishSheep/deepseek2api.svg)](LICENSE)
+![](https://img.shields.io/github/stars/DeerFishSheep/deepseek2api.svg)
+![](https://img.shields.io/github/forks/DeerFishSheep/deepseek2api.svg)
 
-支持高速流式输出、支持多轮对话、支持R1深度思考，多路账号支持，支持对话结束后自动删除 DeepSeek 会话，支持 工具函数调用。
+一个面向 DeepSeek Web 侧能力的兼容代理，提供：
 
-与ChatGPT接口完全兼容。
-
-## 目录
-
-* [免责声明](#免责声明)
-* [接入准备](#接入准备)
-  * [多账号接入](#多账号接入)
-* [Docker部署](#Docker部署)
-* [Docker-compose部署](#Docker-compose部署)
-* [Vercel部署](#Vercel部署)
-* [原生部署](#原生部署)
-* [接口列表](#接口列表)
-  * [模型列表](#模型列表)
-  * [对话补全](#对话补全)
-* [注意事项](#注意事项)
-  * [Nginx反代优化](#Nginx反代优化)
-  * [Token统计](#Token统计)
-* [Star History](#star-history)
-* [鸣谢](#鸣谢)
+- OpenAI 风格的 `/v1/chat/completions`
+- Anthropic 风格的 `/anthropic/v1/messages`
+- 多账号轮换、会话清理、流式输出
+- 增强后的工具调用链路：默认使用 `json action` 协议，并保留 legacy 兼容回退
 
 ## 免责声明
 
-**逆向API是不稳定的，建议前往DeepSeek官方 https://platform.deepseek.com/ 付费使用API，避免封禁的风险。**
+这是基于逆向行为的兼容代理，不保证长期稳定，也不建议对外提供商业服务。
 
-**本组织和个人不接受任何资金捐助和交易，此项目是纯粹研究交流学习性质！**
+- 已确认：项目当前以研究、学习、自用为主要目标。
+- 待验证：DeepSeek 上游行为、风控策略、网页接口细节都可能随时间变化。
+- 建议：如果你需要稳定生产能力，优先考虑官方 API。
 
-**仅限自用，禁止对外提供服务或商用，避免对官方造成服务压力，否则风险自担！**
+## 这份增强版做了什么
 
-**仅限自用，禁止对外提供服务或商用，避免对官方造成服务压力，否则风险自担！**
+相较于上游版本，这个仓库当前额外增强了工具调用能力：
 
-**仅限自用，禁止对外提供服务或商用，避免对官方造成服务压力，否则风险自担！**
+- 默认工具策略从原来的纯 `tool_calls` 提示词方案升级为 `json_action`
+- 新增 `tooling/` 模块，拆出 prompt、parser、adapter、guard、fixer、config
+- 支持 `tool_choice=any` / 指定工具调用的约束提示
+- 支持空工具调用重试、工具拒绝纠偏、半截 `json action` 自动续写
+- OpenAI 和 Anthropic 两条兼容链路共用一套工具解析逻辑
 
-## 接入准备
+## 快速开始
 
-一个或多个 DeepSeek 账号
+### 1. 克隆仓库
 
-### 多账号接入
+```bash
+git clone https://github.com/DeerFishSheep/deepseek2api.git
+cd deepseek2api
+```
 
-目前同个账号同时只能有*一路*输出，你可以通过提供多个账号并使用。
+### 2. 安装依赖
 
-每次请求服务会从中挑选一个。
+```bash
+pip install -r requirements.txt
+```
 
-## Docker部署
+### 3. 配置 `config.json`
 
-请准备一台具有公网IP的服务器并将5001端口开放。
+示例：
 
-配置 config.json
-
-在 `deepseek` 目录下，创建 config.json文件
 ```json
 {
   "keys": [
@@ -66,279 +59,163 @@
       "email": "example1@example.com",
       "password": "password1",
       "token": ""
-    },
-    {
-      "email": "example2@example.com",
-      "password": "password2",
-      "token": ""
-    },
-    {
-      "mobile": "12345678901",
-      "password": "password3",
-      "token": ""
-    },
-    {
-      "mobile": "12345678901",
-      "password": "password4",
-      "token": ""
-    }
-  ]
-}
-```
- * keys - 你的 API 鉴权密钥
- * accounts - DeepSeek 账号列表，支持多个账号轮换，避免单账号受限
-
-拉取镜像并启动服务。
-
-```shell
-docker run -d -p 5001:5001 -v "$(pwd)/config.json:/app/config.json" --name deepseek2api ghcr.io/iidamie/deepseek2api:latest
-```
-
-查看服务实时日志
-
-```shell
-docker logs -f deepseek2api
-```
-
-重启服务
-
-```shell
-docker restart deepseek2api
-```
-
-停止服务
-
-```shell
-docker stop deepseek2api
-```
-
-## Docker-compose部署
-
-拉取该项目
-```shell
-git clone https://github.com/iidamie/deepseek2api.git
-cd deepseek2api
-```
-配置 config.json
-
-在当前目录下，修改 config.json 文件
- * keys - 你的 API 鉴权密钥
- * accounts - DeepSeek 账号列表，支持多个账号轮换，避免单账号受限
-
-启动服务
-
-```shell
-docker-compose up -d
-```
-
-查看服务实时日志
-
-```shell
-docker logs -f deepseek2api
-```
-
-重启服务
-
-```shell
-docker restart deepseek2api
-```
-
-停止服务
-
-```shell
-docker stop deepseek2api
-```
-
-## Vercel部署
-
-> [!NOTE]
-> Vercel免费账户的请求响应超时时间为10秒，但接口响应通常较久，可能会遇到Vercel返回的504超时错误！
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/import/project?template=https://github.com/iidamie/deepseek2api)
-
-部署完后，返回你的 Github 仓库配置 config.json
- * keys - 你的 API 鉴权密钥
- * accounts - DeepSeek 账号列表，支持多个账号轮换，避免单账号受限
-
-> [!WARNING]  
-> 一定要是私库，防止信息泄露！
-
-配置完后，返回 Vercel 控制台，重新部署即可
-
-## 原生部署
-
-请准备一台具有公网IP的服务器并将5001端口开放。
-
-请先安装好 Python 环境并且配置好环境变量，确认 python 命令可用。
-
-安装依赖
-
-```shell
-git clone https://github.com/iidamie/deepseek2api.git
-cd deepseek2api
-pip install -r requirements.txt
-```
-
-配置 config.json
-
-在当前目录下，修改 config.json 文件
- * keys - 你的 API 鉴权密钥
- * accounts - DeepSeek 账号列表，支持多个账号轮换，避免单账号受限
-
-启动服务
-
-```shell
-python app.py
-```
-
-使用 nohup 启动
-
-```shell
-nohup uvicorn app:app --host 0.0.0.0 --port 5001 > uvicorn.log 2>&1 &
-```
-
-## 接口列表
-
-目前支持与openai兼容的 `/v1/chat/completions` 接口，可自行使用与openai或其他兼容的客户端接入接口。
-
-### 模型列表
-
-获取模型列表接口
-
-**GET /v1/models**
-
-响应数据:
-```json
-{
-  "data": [
-    {
-      "created": 1677610602,
-      "id": "deepseek-chat",
-      "object": "model",
-      "owned_by": "deepseek",
-      "permission": []
-    },
-    {
-      "created": 1677610602,
-      "id": "deepseek-reasoner",
-      "object": "model",
-      "owned_by": "deepseek",
-      "permission": []
-    },
-    {
-      "created": 1677610602,
-      "id": "deepseek-chat-search",
-      "object": "model",
-      "owned_by": "deepseek",
-      "permission": []
-    },
-    {
-      "created": 1677610602,
-      "id": "deepseek-reasoner-search",
-      "object": "model",
-      "owned_by": "deepseek",
-      "permission": []
     }
   ],
-  "object": "list"
-}
-```
-
-### 对话补全
-
-对话补全接口，与openai的 [chat-completions-api](https://platform.openai.com/docs/guides/text-generation/chat-completions-api) 兼容。
-
-**POST /v1/chat/completions**
-
-header 需要设置 Authorization 头部：
-
-```
-Authorization: Bearer [userToken value or keys]
-```
-
-请求数据：
-```json
-{
-    // model名称
-    // 默认：deepseek-chat 或 deepseek-v3
-    // 深度思考：deepseek-reasoner 或 deepseek-r1
-    // 联网搜索：deepseek-chat-search 或 deepseek-v3-search
-    // 联网搜索 + 深度思考：deepseek-reasoner-search 或 deepseek-r1-search
-    "model": "deepseek-chat",
-    // 多轮对话基于消息合并实现，某些场景可能导致能力下降且受单轮最大token数限制
-    "messages": [
-        {
-            "role": "user",
-            "content": "你是谁？"
-        }
-    ],
-    // 如果使用流式响应请设置为true，默认false
-    "stream": false
-}
-```
-
-响应数据：
-```json
-{
-  "choices": [
-    {
-      "finish_reason": "stop",
-      "index": 0,
-      "message": {
-        "content": "您好！我是由中国的深度求索（DeepSeek）公司开发的智能助手DeepSeek-R1。如您有任何任何问题，我会尽我所能为您提供帮助。",
-        "reasoning_content": "您好！我是由中国的深度求索（DeepSeek）公司开发的智能助手DeepSeek-R1。如您有任何任何问题，我会尽我所能为您提供帮助。\n",
-        "role": "assistant"
-      }
-    }
-  ],
-  "created": 1738598554,
-  "id": "bc223da6-f091-4687-9f59-b9f2a917bd49",
-  "model": "deepseek-r1",
-  "object": "chat.completion",
-  "usage": {
-    "completion_tokens": 37,
-    "prompt_tokens": 1,
-    "total_tokens": 38
+  "tool_call_strategy": "json_action",
+  "tool_call_fewshot": true,
+  "tool_call_retry_on_empty": true,
+  "tool_call_retry_on_refusal": true,
+  "tool_call_auto_continue": true,
+  "tool_call_retry_max_attempts": 1,
+  "tool_call_parser": {
+    "fix_arguments": true
   }
 }
 ```
 
-## 注意事项
+字段说明：
 
-### Nginx反代优化
+- `keys`：对外暴露给客户端使用的 API Key 列表
+- `accounts`：DeepSeek 账号列表，支持多账号轮换
+- `tool_call_strategy`：`json_action` 或 `legacy`
+- `tool_call_fewshot`：是否在提示词中注入简短工具调用示例
+- `tool_call_retry_on_empty`：要求调用工具但模型未调用时是否自动重试
+- `tool_call_retry_on_refusal`：模型误判“不能用工具”时是否纠偏重试
+- `tool_call_auto_continue`：`json action` 被截断时是否自动续写
+- `tool_call_retry_max_attempts`：最大重试次数
+- `tool_call_parser.fix_arguments`：是否自动修复常见工具参数格式问题
 
-如果您正在使用Nginx反向代理deepseek2api，请添加以下配置项优化流的输出效果，优化体验感。
+### 4. 启动服务
 
-```nginx
-# 关闭代理缓冲。当设置为off时，Nginx会立即将客户端请求发送到后端服务器，并立即将从后端服务器接收到的响应发送回客户端。
-proxy_buffering off;
-# 启用分块传输编码。分块传输编码允许服务器为动态生成的内容分块发送数据，而不需要预先知道内容的大小。
-chunked_transfer_encoding on;
-# 开启TCP_NOPUSH，这告诉Nginx在数据包发送到客户端之前，尽可能地发送数据。这通常在sendfile使用时配合使用，可以提高网络效率。
-tcp_nopush on;
-# 开启TCP_NODELAY，这告诉Nginx不延迟发送数据，立即发送小数据包。在某些情况下，这可以减少网络的延迟。
-tcp_nodelay on;
-# 设置保持连接的超时时间，这里设置为120秒。如果在这段时间内，客户端和服务器之间没有进一步的通信，连接将被关闭。
-keepalive_timeout 120;
+```bash
+python app.py
 ```
 
-### Token统计
+默认监听端口为 `5001`。
 
-符合 OPENAI 接口规范
+## Docker 部署
 
-示例:
+### Docker
+
+```bash
+docker build -t deepseek2api:local .
+docker run -d -p 5001:5001 -v "$(pwd)/config.json:/app/config.json" --name deepseek2api deepseek2api:local
+```
+
+### Docker Compose
+
+当前仓库的 [`docker-compose.yml`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/docker-compose.yml) 已调整为构建本地增强版镜像：
+
+```bash
+docker compose up --build -d
+```
+
+## 接口概览
+
+已确认当前服务暴露以下主要接口：
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /v1/chat/stop_stream`
+- `GET /anthropic/v1/models`
+- `POST /anthropic/v1/messages`
+- `POST /anthropic/v1/messages/count_tokens`
+- `POST /anthropic/v1/messages/stop_stream`
+
+### OpenAI 兼容接口
+
+基础地址：
+
+```text
+http://127.0.0.1:5001/v1
+```
+
+示例请求：
+
 ```json
-"usage": {
-  "completion_tokens": 37,
-  "prompt_tokens": 1,
-  "total_tokens": 38
+{
+  "model": "deepseek-chat",
+  "messages": [
+    {
+      "role": "user",
+      "content": "你好，介绍一下你自己。"
+    }
+  ],
+  "stream": false
 }
 ```
 
-## Star History
+可用模型别名：
 
-[![Star History Chart](https://api.star-history.com/svg?repos=iidamie/deepseek2api&type=Date)](https://star-history.com/#iidamie/deepseek2api&Date)
+- `deepseek-chat`
+- `deepseek-reasoner`
+- `deepseek-chat-search`
+- `deepseek-reasoner-search`
 
-## 鸣谢
+### Anthropic 兼容接口
 
-本项目部分代码参考了 [LLM-Red-Team/deepseek-free-api](https://github.com/LLM-Red-Team/deepseek-free-api)，在此表示感谢
+基础地址：
+
+```text
+http://127.0.0.1:5001/anthropic/v1
+```
+
+当前模型列表接口会返回以下兼容模型名：
+
+- `claude-sonnet-4-20250514`
+- `claude-sonnet-4-20250514-fast`
+- `claude-sonnet-4-20250514-slow`
+
+## Tools 支持
+
+当前增强版默认启用 `json_action` 工具协议，但对客户端仍然保持标准兼容：
+
+- OpenAI 客户端传入 `tools`，收到标准 `tool_calls`
+- Anthropic 客户端传入 `tools`，收到标准 `tool_use`
+- 服务内部会把模型输出的 `json action` 块解析并重新适配为兼容响应
+
+详细说明见：
+
+- [Tools 支持说明](docs/TOOLS_SUPPORT.md)
+- [迁移计划与设计记录](docs/CURSOR2API_MIGRATION_PLAN.md)
+
+## 项目结构
+
+当前已经完成一轮轻量结构化整理：
+
+- [`app.py`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/app.py)：主入口与路由
+- [`tooling/`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/tooling)：工具调用相关模块
+- [`templates/`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/templates)：页面模板
+- [`docs/`](/e:/Users/Lyy/Desktop/服务器项目/deepseek2api/iidamie-deepseek2api/docs)：项目文档与迁移说明
+
+如果你要继续清洗代码结构，建议下一步优先拆分：
+
+- 路由层
+- DeepSeek 上游客户端
+- 会话管理与账号轮换
+- SSE / 流式适配逻辑
+
+## 验证方式
+
+已确认当前仓库可通过基础编译检查：
+
+```bash
+py -3 -m py_compile app.py tooling/__init__.py tooling/adapter.py tooling/config.py tooling/fixer.py tooling/guard.py tooling/parser.py tooling/prompt.py
+py -3 -m compileall .
+```
+
+如果你修改了代码，建议至少重复一次这两步。
+
+## 相关文档
+
+- [Tools 支持说明](docs/TOOLS_SUPPORT.md)
+- [项目结构说明](docs/PROJECT_STRUCTURE.md)
+- [Cursor2API 迁移计划](docs/CURSOR2API_MIGRATION_PLAN.md)
+
+## 致谢
+
+部分思路和实现参考了这些项目：
+
+- [iidamie/deepseek2api](https://github.com/iidamie/deepseek2api)
+- [LLM-Red-Team/deepseek-free-api](https://github.com/LLM-Red-Team/deepseek-free-api)
+- [7836246/cursor2api](https://github.com/7836246/cursor2api)
