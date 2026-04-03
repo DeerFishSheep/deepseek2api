@@ -97,17 +97,20 @@ python app.py
 
 ### Docker
 
+直接拉取 GHCR 镜像运行：
+
 ```bash
-docker build -t deepseek2api:local .
-docker run -d -p 5001:5001 -v "$(pwd)/config.json:/app/config.json" --name deepseek2api deepseek2api:local
+docker pull ghcr.io/deerfishsheep/deepseek2api:latest
+docker run -d -p 5001:5001 -v "$(pwd)/config.json:/app/config.json" --name deepseek2api ghcr.io/deerfishsheep/deepseek2api:latest
 ```
 
 ### Docker Compose
 
-当前仓库的 [`docker-compose.yml`](docker-compose.yml) 已调整为构建本地增强版镜像：
+当前仓库的 [`docker-compose.yml`](docker-compose.yml) 已调整为镜像部署版：
 
 ```bash
-docker compose up --build -d
+docker compose pull
+docker compose up -d
 ```
 
 ## 接口概览
